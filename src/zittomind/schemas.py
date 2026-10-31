@@ -29,7 +29,7 @@ class Request(Contract):
     shadow: bool = False
     profile: Profile | None = None
     model: str | None = None
-    provider: Literal["openai", "anthropic"] | None = None
+    provider: Literal["openai", "anthropic", "ollama"] | None = None
     reasoning: Effort | None = None
     complexity: Complexity | None = None
     max_output_tokens: int = Field(default=1024, ge=1, le=100000)
@@ -61,7 +61,7 @@ class Classification(Contract):
 
 class Model(Contract):
     id: str = Field(min_length=1, max_length=200)
-    provider: Literal["openai", "anthropic"]
+    provider: Literal["openai", "anthropic", "ollama"]
     enabled: bool = True
     streaming: bool = False
     context_window: int | None = Field(default=None, gt=0)
@@ -93,8 +93,8 @@ class Policy(Contract):
     profile: Profile = "balanced"
     privacy: Literal["standard", "strict"] = "standard"
     max_cost_per_request: float | None = Field(default=None, ge=0)
-    allowed_providers: list[Literal["openai", "anthropic"]] = Field(
-        default=["openai", "anthropic"]
+    allowed_providers: list[Literal["openai", "anthropic", "ollama"]] = Field(
+        default=["openai", "anthropic", "ollama"]
     )
     model: str | None = None
     external_classification: bool = False
@@ -134,6 +134,8 @@ class Completion(Contract):
     text: str
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(default=0, ge=0)
+    reasoning_tokens: int = Field(default=0, ge=0)
     finish_reason: str | None = None
 
 

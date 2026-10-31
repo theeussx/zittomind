@@ -25,6 +25,12 @@ async def complete(
             text=choice["message"]["content"],
             input_tokens=data["usage"]["prompt_tokens"],
             output_tokens=data["usage"]["completion_tokens"],
+            cached_tokens=data["usage"]
+            .get("prompt_tokens_details", {})
+            .get("cached_tokens", 0),
+            reasoning_tokens=data["usage"]
+            .get("completion_tokens_details", {})
+            .get("reasoning_tokens", 0),
             finish_reason=choice.get("finish_reason"),
         )
     except (KeyError, IndexError, TypeError, ValueError):

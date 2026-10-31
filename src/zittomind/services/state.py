@@ -18,6 +18,7 @@ class State:
             CREATE TABLE IF NOT EXISTS spending (
                 id TEXT NOT NULL, scope TEXT NOT NULL, amount REAL NOT NULL,
                 PRIMARY KEY(id, scope));
+            CREATE INDEX IF NOT EXISTS spending_scope ON spending(scope);
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY, created REAL NOT NULL,
                 project TEXT NOT NULL, data TEXT NOT NULL);

@@ -132,6 +132,8 @@ class Execution:
                     status="ok",
                     input_tokens=response.input_tokens,
                     output_tokens=response.output_tokens,
+                    cached_tokens=response.cached_tokens,
+                    reasoning_tokens=response.reasoning_tokens,
                 )
                 if cache_enabled:
                     self.responses.put(request.project, key, response.model_dump())

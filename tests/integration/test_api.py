@@ -113,3 +113,18 @@ async def test_stream_close_closes_upstream(monkeypatch):
     await anext(events)
     await events.aclose()
     assert body.closed
+
+
+async def test_dashboard_shell_public_metrics_private():
+    app = create_app(config(), token="test-token")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        page = await client.get("/dashboard")
+        assert page.status_code == 200
+        assert "test-token" not in page.text
+        assert (await client.get("/metrics")).status_code == 401
+        result = await client.get(
+            "/metrics", headers={"Authorization": "Bearer test-token"}
+        )
+        assert result.json()["requests"] == 0

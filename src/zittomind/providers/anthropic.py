@@ -35,7 +35,10 @@ async def complete(
         )
         return Completion(
             text=text,
-            input_tokens=data["usage"]["input_tokens"],
+            input_tokens=data["usage"]["input_tokens"]
+            + data["usage"].get("cache_read_input_tokens", 0)
+            + data["usage"].get("cache_creation_input_tokens", 0),
+            cached_tokens=data["usage"].get("cache_read_input_tokens", 0),
             output_tokens=data["usage"]["output_tokens"],
             finish_reason=data.get("stop_reason"),
         )

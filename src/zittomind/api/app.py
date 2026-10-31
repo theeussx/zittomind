@@ -5,11 +5,11 @@ import json
 import os
 import time
 from collections.abc import AsyncIterator
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import Field, ValidationError
 
 from zittomind import ZittoMind
@@ -30,16 +30,39 @@ def create_app(
     secret = token or os.environ.get("ZITTOMIND_PROXY_TOKEN")
     if not secret or project not in config.projects:
         raise ValueError("proxy token and valid project are required")
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     router = ZittoMind(config)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            router.close()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.router = router
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next: Any) -> Any:
+        if request.url.path == "/dashboard" and request.method == "GET":
+            return await call_next(request)
         provided = request.headers.get("authorization", "")
         if not hmac.compare_digest(provided.encode(), f"Bearer {secret}".encode()):
             return JSONResponse({"error": {"message": "Unauthorized"}}, status_code=401)
         return await call_next(request)
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard() -> HTMLResponse:
+        from zittomind.api.dashboard import HTML
+
+        return HTMLResponse(
+            HTML,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Frame-Options": "DENY",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/health")
     async def health() -> dict[str, str]:

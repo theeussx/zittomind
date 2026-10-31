@@ -32,8 +32,10 @@ def rejection_reasons(
     reasons = []
     if not model.enabled:
         reasons.append("disabled")
-    if request.local_only or policy.privacy == "strict":
-        reasons.append("privacy requires local provider (not implemented in phase 1)")
+    if (
+        request.local_only or policy.privacy == "strict"
+    ) and model.provider != "ollama":
+        reasons.append("privacy requires local provider")
     if model.provider not in policy.allowed_providers or (
         request.provider and request.provider != model.provider
     ):

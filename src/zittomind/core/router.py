@@ -2,6 +2,8 @@
 
 import hashlib
 import logging
+import time
+from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any
@@ -16,7 +18,7 @@ from zittomind.core.capabilities import (
 from zittomind.core.classifier import classify
 from zittomind.core.reasoning import reasoning_parameters
 from zittomind.core.registry import Registry
-from zittomind.providers import anthropic, openai
+from zittomind.providers import anthropic, ollama, openai
 from zittomind.schemas import (
     Classification,
     Completion,
@@ -51,7 +53,7 @@ class ZittoMind:
             cache.capacity = self.config.cache_capacity
         self.state.purge(self.config.retention_days)
         self.history = PolicyHistory(self.state)
-        self.sessions: dict[tuple[str, str], str] = {}
+        self.sessions: OrderedDict[tuple[str, str], str] = OrderedDict()
 
     def close(self) -> None:
         self.state.close()
@@ -73,6 +75,8 @@ class ZittoMind:
     async def _raw_complete(
         self, model: Model, request: Request, task: Classification
     ) -> Completion:
+        if model.provider == "ollama":
+            return await ollama.complete(model, request, self.config.timeout_seconds)
         credentials = Credentials()
         secret = (
             credentials.openai_api_key
@@ -345,6 +349,8 @@ class ZittoMind:
             decision.fallbacks = index
             if request.session:
                 self.sessions[(request.project, request.session)] = candidate.id
+                if len(self.sessions) > self.config.cache_capacity:
+                    self.sessions.popitem(last=False)
             self.state.record(
                 {
                     "id": decision.id,
@@ -380,32 +386,60 @@ class ZittoMind:
             if model.provider == "openai"
             else credentials.anthropic_api_key
         )
-        if not secret:
+        if not secret and model.provider != "ollama":
             raise ValueError("missing provider credential")
         params = reasoning_parameters(
             model, result.decision.reasoning, request.max_output_tokens
         )
+        created = int(time.time())
         async with aclosing(
             self.execution.stream(
                 model,
                 request,
                 self.config.projects[request.project],
-                lambda: stream(
-                    model,
-                    request,
-                    params,
-                    secret.get_secret_value(),
-                    self.config.timeout_seconds,
+                lambda: (
+                    ollama.stream(model, request, self.config.timeout_seconds)
+                    if model.provider == "ollama"
+                    else stream(
+                        model,
+                        request,
+                        params,
+                        secret.get_secret_value() if secret else "",
+                        self.config.timeout_seconds,
+                    )
                 ),
             )
         ) as events:
             async for event in events:
+                if event.get("usage"):
+                    usage = event["usage"]
+                    usage["total_tokens"] = usage.get("prompt_tokens", 0) + usage.get(
+                        "completion_tokens", 0
+                    )
                 yield {
                     "id": result.decision.id,
                     "object": "chat.completion.chunk",
+                    "created": created,
                     "model": model.id,
                     **event,
                 }
+        if request.session:
+            self.sessions[(request.project, request.session)] = model.id
+            if len(self.sessions) > self.config.cache_capacity:
+                self.sessions.popitem(last=False)
+        self.state.record(
+            {
+                "id": result.decision.id,
+                "project": request.project,
+                "model": model.id,
+                "provider": model.provider,
+                "status": "decision",
+                "category": result.decision.classification.category,
+                "complexity": result.decision.classification.complexity,
+                "policy_version": result.decision.policy_version,
+                "shadow_model": result.decision.shadow_model,
+            }
+        )
 
     async def simulate(
         self, prompt: str, *, version: int, **options: Any

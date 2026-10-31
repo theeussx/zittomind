@@ -1,0 +1,24 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZittoMind · Operação local</title>
+<style>
+body{font:16px system-ui;background:#f4f6f5;color:#19312b;max-width:960px;margin:48px auto;padding:0 24px}
+h1{font-size:36px;margin-bottom:8px}p{line-height:1.6;color:#486258}
+form{display:flex;gap:12px;flex-wrap:wrap;margin:32px 0}input,button{font:inherit;padding:12px;border:1px solid #9aada5;border-radius:8px}
+button{background:#176248;color:white;cursor:pointer}input{flex:1}section{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px}
+article{background:white;border:1px solid #dae3de;border-radius:12px;padding:24px}strong{font-size:32px;display:block;margin-top:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:24px;border-radius:12px}label{width:100%}
+</style><header><small>ZITTOMIND / LOCAL</small><h1>Operação do roteador</h1>
+<p>Requisições, tokens e custos calculados do projeto deste proxy. Custos não são faturas.</p></header>
+<form id="access"><label for="token">Token do proxy</label><input id="token" type="password" autocomplete="off" required>
+<button>Atualizar métricas</button></form><p id="status" role="status">Informe o token para consultar.</p>
+<section id="cards"></section><h2>Detalhes</h2><pre id="details">Nenhum dado carregado.</pre>
+<script>
+document.querySelector('#access').addEventListener('submit',async event=>{
+event.preventDefault();const status=document.querySelector('#status');status.textContent='Consultando…';
+try{const response=await fetch('/metrics',{headers:{Authorization:'Bearer '+document.querySelector('#token').value},cache:'no-store'});
+if(!response.ok)throw new Error();const data=await response.json();const cards=document.querySelector('#cards');cards.replaceChildren();
+for(const [label,key] of [['Requisições','requests'],['Tokens de entrada','input_tokens'],['Tokens de saída','output_tokens'],['Erros','errors']]){
+const card=document.createElement('article');card.textContent=label;const value=document.createElement('strong');value.textContent=String(data[key]);card.append(value);cards.append(card);}
+document.querySelector('#details').textContent=JSON.stringify(data,null,2);status.textContent='Métricas atualizadas.';
+}catch{status.textContent='Não foi possível consultar. Confira o token e a conexão local.';}});
+</script></html>
