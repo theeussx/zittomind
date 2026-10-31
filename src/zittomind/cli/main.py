@@ -215,3 +215,120 @@ def cache(config: ConfigPath = None) -> None:
             ],
         }
     )
+
+
+@app.command()
+def benchmark(config: ConfigPath = None) -> None:
+    """Run labeled offline fixtures; reports no invented generation quality."""
+    from zittomind.services.benchmark import compare
+
+    router = ZittoMind(read_config(config))
+    try:
+        emit(asyncio.run(compare(router)))
+    except ValueError:
+        typer.echo("Configure a registry for the offline benchmark.", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        router.close()
+
+
+policies_app = typer.Typer(
+    help="Inspect, version, simulate and roll back scoring policies."
+)
+app.add_typer(policies_app, name="policies")
+
+
+@policies_app.command("list")
+def policies_list(config: ConfigPath = None) -> None:
+    router = ZittoMind(read_config(config))
+    try:
+        emit(router.history.versions())
+    finally:
+        router.close()
+
+
+@policies_app.command("import")
+def policies_import(path: Path, config: ConfigPath = None) -> None:
+    router = ZittoMind(read_config(config))
+    try:
+        emit({"version": router.history.save(json.loads(path.read_text()))})
+    except (ValueError, OSError):
+        typer.echo("Invalid scoring policy.", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        router.close()
+
+
+@policies_app.command("rollback")
+def policies_rollback(version: int, config: ConfigPath = None) -> None:
+    router = ZittoMind(read_config(config))
+    try:
+        router.history.activate(version)
+        emit(router.history.active())
+    except ValueError:
+        typer.echo("Unknown policy version.", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        router.close()
+
+
+@policies_app.command("simulate")
+def policies_simulate(
+    version: int, prompt: str = "Explique chmod", config: ConfigPath = None
+) -> None:
+    router = ZittoMind(read_config(config))
+    try:
+        emit(asyncio.run(router.simulate(prompt, version=version)).model_dump())
+    except ValueError:
+        typer.echo("Simulation failed; check policy and registry.", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        router.close()
+
+
+@policies_app.command("feedback")
+def feedback(
+    model: str,
+    quality: float,
+    category: str = "general",
+    project: str = "default",
+    config: ConfigPath = None,
+) -> None:
+    from zittomind.services.adaptive import Evaluation
+
+    router = ZittoMind(read_config(config))
+    try:
+        router.registry.get(model)
+        if project not in router.config.projects:
+            raise ValueError("unknown project")
+        emit(
+            {
+                "evaluation": router.history.feedback(
+                    Evaluation(
+                        model=model, category=category, quality=quality, project=project
+                    )
+                )
+            }
+        )
+    except ValueError:
+        typer.echo("Invalid feedback.", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        router.close()
+
+
+@policies_app.command("learn")
+def policies_learn(project: str = "default", config: ConfigPath = None) -> None:
+    router = ZittoMind(read_config(config))
+    try:
+        emit(
+            {
+                "proposed_version": router.history.learn(project=project),
+                "activated": False,
+            }
+        )
+    except ValueError:
+        typer.echo("At least five explicit evaluations are required.", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        router.close()

@@ -26,6 +26,7 @@ from zittomind.schemas import (
     Request,
     RouteResult,
 )
+from zittomind.services.adaptive import PolicyHistory, score
 from zittomind.services.execution import Execution
 from zittomind.services.state import State
 
@@ -49,6 +50,7 @@ class ZittoMind:
             cache.ttl = self.config.cache_ttl
             cache.capacity = self.config.cache_capacity
         self.state.purge(self.config.retention_days)
+        self.history = PolicyHistory(self.state)
         self.sessions: dict[tuple[str, str], str] = {}
 
     def close(self) -> None:
@@ -165,6 +167,8 @@ class ZittoMind:
             self.execution.classifications.put(
                 request.project, cache_key, task.model_dump()
             )
+        if not request.model and task.category in policy.category_models:
+            request.model = policy.category_models[task.category]
         classifier_cost = 0.0
         if request.external_classification and task.confidence < 0.75:
             task, classifier_cost = await self._external(request, policy, task)
@@ -192,7 +196,76 @@ class ZittoMind:
                 + ("; ".join(reasons) or "configure model registry")
             )
 
+        profiles = {
+            "economy": {
+                "quality": 0.3,
+                "cost": 0.5,
+                "reliability": 0.1,
+                "latency": 0.1,
+            },
+            "balanced": {
+                "quality": 0.5,
+                "cost": 0.2,
+                "reliability": 0.2,
+                "latency": 0.1,
+            },
+            "performance": {
+                "quality": 0.75,
+                "cost": 0.05,
+                "reliability": 0.15,
+                "latency": 0.05,
+            },
+            **self.config.profiles,
+        }
+        if profile not in profiles:
+            raise ValueError("unknown profile")
+        weights = profiles[profile]
+        active = self.history.active()
+        policy_version = "rules-v1"
+        if active and self.config.adaptive_enabled and not self.config.observation_only:
+            weights = active["weights"]
+            policy_version = str(active["version"])
+        evaluations = self.history.evaluations()
+        scores: dict[str, dict[str, Any]] = {}
+        events = self.state.events(request.project)
+        for model in eligible:
+            measured = [
+                e
+                for e in events
+                if e["model"] == model.id and e.get("status") != "decision"
+            ]
+            reliability = (
+                sum(e.get("status") == "ok" for e in measured) / len(measured)
+                if measured
+                else None
+            )
+            latency = (
+                sum(e.get("latency", 0) for e in measured) / len(measured)
+                if measured
+                else None
+            )
+            scores[model.id] = score(
+                model.id,
+                task.category,
+                evaluations,
+                weights,
+                cost=estimate(model, request),
+                project=request.project,
+                reliability=reliability,
+                latency=latency,
+            )
+        eligible = [
+            m for m in eligible if scores[m.id]["confidence"] >= policy.min_confidence
+        ]
+        if not eligible:
+            raise ValueError("insufficient evaluation confidence")
+        use_scores = self.config.ris_enabled and any(
+            s["samples"] for s in scores.values()
+        )
+
         def key(model: Model) -> tuple[float, float, str]:
+            if use_scores:
+                return -float(scores[model.id]["score"]), -model.priority, model.id
             cost = estimate(model, request)
             price = cost if cost is not None else float("inf")
             if profile == "economy":
@@ -211,6 +284,8 @@ class ZittoMind:
         decision = Decision(
             model_id=selected.id,
             shadow_model=shadow_model,
+            scores=scores,
+            policy_version=policy_version,
             provider=selected.provider,
             project=request.project,
             profile=profile,
@@ -221,7 +296,9 @@ class ZittoMind:
             estimated_input_tokens=input_tokens(request),
             reasons=[
                 "mandatory filters passed",
-                "operator priority and estimated cost; no measured RIS",
+                "evidence-based RIS"
+                if use_scores
+                else "operator priority; insufficient quality evidence",
                 "token estimate is a conservative byte bound",
             ],
             rejected=rejected,
@@ -280,6 +357,7 @@ class ZittoMind:
                     "fallbacks": index,
                     "shadow_model": shadow_model,
                     "policy_version": decision.policy_version,
+                    "scores": scores,
                 }
             )
             return RouteResult(decision=decision, response=response)
@@ -328,3 +406,25 @@ class ZittoMind:
                     "model": model.id,
                     **event,
                 }
+
+    async def simulate(
+        self, prompt: str, *, version: int, **options: Any
+    ) -> RouteResult:
+        versions = [v for v in self.history.versions() if v["version"] == version]
+        if not versions:
+            raise ValueError("unknown policy version")
+        configuration = self.config.model_copy(deep=True)
+        configuration.profiles["simulation"] = versions[0]["weights"]
+        configuration.adaptive_enabled = False
+        # A separate instance avoids mutating routing policy for concurrent callers.
+        candidate = ZittoMind(configuration)
+        if self.config.state_path == ":memory:":
+            for evaluation in self.history.evaluations():
+                candidate.history.feedback(evaluation)
+        try:
+            options.update(
+                dry_run=True, external_classification=False, profile="simulation"
+            )
+            return await candidate.route(prompt, **options)
+        finally:
+            candidate.close()

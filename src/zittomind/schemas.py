@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Complexity = Literal["SIMPLE", "MEDIUM", "ADVANCED"]
 Effort = Literal["low", "medium", "high"]
-Profile = Literal["economy", "balanced", "performance"]
+Profile = str
 
 
 class Contract(BaseModel):
@@ -81,6 +81,8 @@ class Model(Contract):
 
 
 class Policy(Contract):
+    category_models: dict[str, str] = Field(default_factory=dict)
+    min_confidence: float = Field(default=0, ge=0, le=1)
     response_cache: bool = False
     safe_retries: int = Field(default=0, ge=0, le=3)
     allow_fallback: bool = False
@@ -122,6 +124,7 @@ class Decision(Contract):
     estimated_input_tokens: int
     reasons: list[str]
     rejected: dict[str, list[str]]
+    scores: dict[str, dict[str, object]] = Field(default_factory=dict)
     shadow_model: str | None = None
     fallbacks: int = 0
     policy_version: str = "rules-v1"

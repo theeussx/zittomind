@@ -18,6 +18,10 @@ class Credentials(BaseSettings):
 class Config(Contract):
     models: list[Model] = Field(default_factory=list)
     projects: dict[str, Policy] = Field(default_factory=lambda: {"default": Policy()})
+    ris_enabled: bool = True
+    adaptive_enabled: bool = False
+    observation_only: bool = True
+    profiles: dict[str, dict[str, float]] = Field(default_factory=dict)
     state_path: str = ":memory:"
     concurrency: int = Field(default=8, ge=1, le=256)
     requests_per_minute: int = Field(default=60, ge=1)
@@ -37,6 +41,10 @@ class Config(Contract):
                 raise ValueError("reasoning/provider mismatch")
             if any(v < 1024 for v in m.thinking_budgets.values()):
                 raise ValueError("thinking budgets must be at least 1024")
+        from zittomind.services.adaptive import score
+
+        for weights in self.profiles.values():
+            score("", "", [], weights, cost=None)
         return self
 
 
