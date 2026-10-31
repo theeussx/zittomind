@@ -1,0 +1,12 @@
+# Synthetic fixture for dry-run only. Not a real model, price or benchmark.
+models:
+  - id: offline-fixture
+    provider: openai
+    context_window: 32768
+    max_output_tokens: 4096
+    tier: ADVANCED
+    priority: 50
+projects:
+  default:
+    profile: balanced
+    external_classification: false
