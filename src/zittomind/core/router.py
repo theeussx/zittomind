@@ -1,5 +1,6 @@
 """Public asynchronous SDK. Decisions never include prompt text."""
 
+import hashlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -25,6 +26,8 @@ from zittomind.schemas import (
     Request,
     RouteResult,
 )
+from zittomind.services.execution import Execution
+from zittomind.services.state import State
 
 logger = logging.getLogger("zittomind")
 
@@ -33,8 +36,39 @@ class ZittoMind:
     def __init__(self, config: Config | None = None):
         self.config = (config or load_config()).model_copy(deep=True)
         self.registry = Registry(self.config.models)
+        self.state = State(self.config.state_path)
+        self.execution = Execution(
+            self.state, self.config.concurrency, self.config.requests_per_minute
+        )
+        for cache in (
+            self.execution.responses,
+            self.execution.classifications,
+            self.execution.metadata,
+            self.execution.prices,
+        ):
+            cache.ttl = self.config.cache_ttl
+            cache.capacity = self.config.cache_capacity
+        self.state.purge(self.config.retention_days)
+        self.sessions: dict[tuple[str, str], str] = {}
+
+    def close(self) -> None:
+        self.state.close()
 
     async def _complete(
+        self,
+        model: Model,
+        request: Request,
+        task: Classification,
+        policy: Policy | None = None,
+    ) -> Completion:
+        return await self.execution.run(
+            model,
+            request,
+            policy or self.config.projects[request.project],
+            lambda: self._raw_complete(model, request, task),
+        )
+
+    async def _raw_complete(
         self, model: Model, request: Request, task: Classification
     ) -> Completion:
         credentials = Credentials()
@@ -76,6 +110,9 @@ class ZittoMind:
             + "\nDerived local features: "
             + local.model_dump_json(),
             model=model.id,
+            project=request.project,
+            session=request.session,
+            operation_id=request.operation_id,
             max_output_tokens=512,
         )
         task = classify(probe)
@@ -88,7 +125,7 @@ class ZittoMind:
         reasons = rejection_reasons(model, probe, classifier_policy, task)
         if reasons:
             raise ValueError("classifier ineligible: " + "; ".join(reasons))
-        response = await self._complete(model, probe, task)
+        response = await self._complete(model, probe, task, classifier_policy)
         try:
             result = Classification.model_validate_json(response.text)
         except ValueError:
@@ -111,7 +148,23 @@ class ZittoMind:
             raise ValueError("unknown project")
         policy = self.config.projects[request.project].model_copy(deep=True)
         profile = request.profile or policy.profile
-        task = classify(request)
+        if request.session and not request.model:
+            request.model = self.sessions.get((request.project, request.session))
+        cache_key = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+        cached_task = (
+            None
+            if request.no_cache
+            else self.execution.classifications.get(request.project, cache_key)
+        )
+        task = (
+            Classification.model_validate(cached_task)
+            if cached_task
+            else classify(request)
+        )
+        if not request.no_cache:
+            self.execution.classifications.put(
+                request.project, cache_key, task.model_dump()
+            )
         classifier_cost = 0.0
         if request.external_classification and task.confidence < 0.75:
             task, classifier_cost = await self._external(request, policy, task)
@@ -119,10 +172,15 @@ class ZittoMind:
                 policy.max_cost_per_request = max(
                     0, policy.max_cost_per_request - classifier_cost
                 )
+        selection_request = request
+        if request.shadow:
+            if not request.model:
+                raise ValueError("shadow requires a pinned original model")
+            selection_request = request.model_copy(update={"model": None})
         rejected: dict[str, list[str]] = {}
         eligible = []
         for model in self.registry.models.values():
-            reasons = rejection_reasons(model, request, policy, task)
+            reasons = rejection_reasons(model, selection_request, policy, task)
             if reasons:
                 rejected[model.id] = reasons
             else:
@@ -142,8 +200,17 @@ class ZittoMind:
             return -model.priority, price, model.id
 
         selected = min(eligible, key=key)
+        shadow_model = None
+        if request.shadow:
+            shadow_model = selected.id
+            original = self.registry.get(request.model or "")
+            reasons = rejection_reasons(original, request, policy, task)
+            if reasons:
+                raise ValueError("shadow original ineligible: " + "; ".join(reasons))
+            selected = original
         decision = Decision(
             model_id=selected.id,
+            shadow_model=shadow_model,
             provider=selected.provider,
             project=request.project,
             profile=profile,
@@ -165,10 +232,58 @@ class ZittoMind:
             selected.provider,
             request.dry_run,
         )
-        response = (
-            None if request.dry_run else await self._complete(selected, request, task)
-        )
-        return RouteResult(decision=decision, response=response)
+        if request.dry_run:
+            return RouteResult(decision=decision)
+        if request.stream:
+            raise ValueError("use stream() for streaming requests")
+        candidates = [selected]
+        if (
+            policy.allow_fallback
+            and not request.model
+            and not policy.model
+            and not request.shadow
+        ):
+            candidates += sorted(
+                (
+                    m
+                    for m in eligible
+                    if m.id != selected.id
+                    and (
+                        m.provider == selected.provider
+                        or policy.cross_provider_fallback
+                    )
+                ),
+                key=key,
+            )
+        last_error: ValueError | None = None
+        for index, candidate in enumerate(candidates):
+            try:
+                response = await self._complete(candidate, request, task)
+            except ValueError as exc:
+                last_error = exc
+                continue
+            decision.model_id, decision.provider = candidate.id, candidate.provider
+            decision.estimated_cost = estimate(candidate, request)
+            decision.reasoning = effort_for(candidate, request, task)
+            decision.fallbacks = index
+            if request.session:
+                self.sessions[(request.project, request.session)] = candidate.id
+            self.state.record(
+                {
+                    "id": decision.id,
+                    "project": request.project,
+                    "model": candidate.id,
+                    "provider": candidate.provider,
+                    "status": "decision",
+                    "category": task.category,
+                    "complexity": task.complexity,
+                    "fallbacks": index,
+                    "shadow_model": shadow_model,
+                    "policy_version": decision.policy_version,
+                }
+            )
+            return RouteResult(decision=decision, response=response)
+        raise last_error or ValueError("no available provider")
 
     async def stream(
         self, prompt: str, **options: Any
@@ -177,8 +292,9 @@ class ZittoMind:
 
         options.pop("dry_run", None)
         options["stream"] = True
-        result = await self.route(prompt, **options, dry_run=True)
         request = Request(prompt=prompt, **options)
+        options["operation_id"] = request.operation_id
+        result = await self.route(prompt, **options, dry_run=True)
         model = self.registry.get(result.decision.model_id)
         credentials = Credentials()
         secret = (
@@ -192,12 +308,17 @@ class ZittoMind:
             model, result.decision.reasoning, request.max_output_tokens
         )
         async with aclosing(
-            stream(
+            self.execution.stream(
                 model,
                 request,
-                params,
-                secret.get_secret_value(),
-                self.config.timeout_seconds,
+                self.config.projects[request.project],
+                lambda: stream(
+                    model,
+                    request,
+                    params,
+                    secret.get_secret_value(),
+                    self.config.timeout_seconds,
+                ),
             )
         ) as events:
             async for event in events:

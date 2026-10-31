@@ -118,3 +118,89 @@ async def test_anthropic_preserves_system_and_history(monkeypatch):
                 {"role": "system", "content": "Late instructions"},
             ],
         )
+
+
+@respx.mock
+async def test_fallback_requires_policy_and_preserves_pin(monkeypatch):
+    from zittomind.schemas import Policy
+
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    models = [
+        Model(id=m, provider="openai", context_window=32000, max_output_tokens=4096)
+        for m in ["a", "b"]
+    ]
+
+    def respond(request):
+        if json.loads(request.content)["model"] == "a":
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "fallback"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    endpoint = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        side_effect=respond
+    )
+    router = ZittoMind(
+        Config(models=models, projects={"default": Policy(allow_fallback=True)})
+    )
+    result = await router.route("hi")
+    assert result.decision.model_id == "b"
+    assert result.decision.fallbacks == 1
+    assert router.state.stats()["fallbacks"] == 1
+    with pytest.raises(ValueError):
+        await router.route("hi", model="a")
+    assert endpoint.call_count == 3
+
+
+@respx.mock
+async def test_shadow_only_generates_original(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    models = [
+        Model(id=m, provider="openai", context_window=32000, max_output_tokens=4096)
+        for m in ["a", "b"]
+    ]
+    endpoint = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+    )
+    result = await ZittoMind(Config(models=models)).route("hi", model="b", shadow=True)
+    assert result.decision.model_id == "b"
+    assert result.decision.shadow_model == "a"
+    assert json.loads(endpoint.calls[0].request.content)["model"] == "b"
+    assert endpoint.call_count == 1
+
+
+@respx.mock
+async def test_explicit_retry_only_repeats_rejected_rate_limit(monkeypatch):
+    from zittomind.schemas import Policy
+
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    endpoint = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                },
+            ),
+        ]
+    )
+    model = Model(
+        id="m", provider="openai", context_window=32000, max_output_tokens=4096
+    )
+    result = await ZittoMind(
+        Config(models=[model], projects={"default": Policy(safe_retries=1)})
+    ).route("hi")
+    assert result.response.text == "ok"
+    assert endpoint.call_count == 2

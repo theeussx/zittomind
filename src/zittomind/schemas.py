@@ -23,6 +23,10 @@ class Request(Contract):
     prompt: str = Field(min_length=1, max_length=100000)
     messages: list[Message] = Field(default_factory=list, max_length=100)
     project: str = "default"
+    session: str | None = Field(default=None, max_length=200)
+    operation_id: str = Field(default_factory=lambda: uuid4().hex, exclude=True)
+    no_cache: bool = False
+    shadow: bool = False
     profile: Profile | None = None
     model: str | None = None
     provider: Literal["openai", "anthropic"] | None = None
@@ -77,6 +81,13 @@ class Model(Contract):
 
 
 class Policy(Contract):
+    response_cache: bool = False
+    safe_retries: int = Field(default=0, ge=0, le=3)
+    allow_fallback: bool = False
+    cross_provider_fallback: bool = False
+    budgets: dict[
+        Literal["project", "session", "model", "provider", "day", "month"], float
+    ] = Field(default_factory=dict)
     profile: Profile = "balanced"
     privacy: Literal["standard", "strict"] = "standard"
     max_cost_per_request: float | None = Field(default=None, ge=0)
@@ -87,6 +98,15 @@ class Policy(Contract):
     external_classification: bool = False
     classifier_model: str | None = None
     classifier_max_cost: float = Field(default=0.001, gt=0)
+
+    @field_validator("budgets")
+    @classmethod
+    def valid_budgets(cls, value: dict[str, float]) -> dict[str, float]:
+        import math
+
+        if any(not math.isfinite(v) or v < 0 for v in value.values()):
+            raise ValueError("budgets must be finite and nonnegative")
+        return value
 
 
 class Decision(Contract):
@@ -102,6 +122,8 @@ class Decision(Contract):
     estimated_input_tokens: int
     reasons: list[str]
     rejected: dict[str, list[str]]
+    shadow_model: str | None = None
+    fallbacks: int = 0
     policy_version: str = "rules-v1"
 
 

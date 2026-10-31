@@ -18,6 +18,12 @@ class Credentials(BaseSettings):
 class Config(Contract):
     models: list[Model] = Field(default_factory=list)
     projects: dict[str, Policy] = Field(default_factory=lambda: {"default": Policy()})
+    state_path: str = ":memory:"
+    concurrency: int = Field(default=8, ge=1, le=256)
+    requests_per_minute: int = Field(default=60, ge=1)
+    cache_ttl: float = Field(default=300, gt=0)
+    cache_capacity: int = Field(default=256, ge=1, le=10000)
+    retention_days: int = Field(default=30, ge=0)
     timeout_seconds: float = Field(default=30, gt=0, le=300)
 
     @model_validator(mode="after")

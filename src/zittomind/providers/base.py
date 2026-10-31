@@ -5,6 +5,12 @@ from typing import Any
 import httpx
 
 
+class ProviderError(ValueError):
+    def __init__(self, status: int):
+        self.status = status
+        super().__init__(f"provider HTTP {status}; generation rejected")
+
+
 async def post(
     url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float
 ) -> dict[str, Any]:
@@ -19,8 +25,6 @@ async def post(
                 raise ValueError("invalid response")
             return data
     except httpx.HTTPStatusError as exc:
-        raise ValueError(
-            f"provider HTTP {exc.response.status_code}; no automatic retry"
-        ) from None
+        raise ProviderError(exc.response.status_code) from None
     except (httpx.HTTPError, ValueError):
         raise ValueError("provider transport or response failure") from None

@@ -40,7 +40,9 @@ def init(path: Path = Path("zittomind.yaml")) -> None:
     """Create an empty registry without replacing an existing file."""
     try:
         with path.open("x") as handle:
-            yaml.safe_dump(Config().model_dump(), handle)
+            yaml.safe_dump(
+                Config(state_path=".zittomind/state.sqlite3").model_dump(), handle
+            )
     except OSError:
         typer.echo(
             "Cannot create configuration (file exists or path unavailable).", err=True
@@ -102,6 +104,9 @@ def ask(
     complexity: str | None = None,
     max_output_tokens: int = 1024,
     dry_run: bool = False,
+    no_cache: bool = False,
+    shadow: bool = False,
+    session: str | None = None,
     local_only: bool = False,
     external_classification: bool = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -120,6 +125,9 @@ def ask(
                 complexity=complexity,
                 max_output_tokens=max_output_tokens,
                 dry_run=dry_run,
+                no_cache=no_cache,
+                shadow=shadow,
+                session=session,
                 local_only=local_only,
                 external_classification=external_classification,
             )
@@ -154,3 +162,56 @@ def serve(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from None
     uvicorn.run(application, host=host, port=port, access_log=False)
+
+
+@app.command()
+def stats(
+    config: ConfigPath = None, project: str | None = None, csv: bool = False
+) -> None:
+    """Export recorded metadata or aggregate statistics; no prompts are retained."""
+    import csv as csv_module
+    import io
+
+    from zittomind.services.state import State
+
+    settings = read_config(config)
+    state = State(settings.state_path)
+    try:
+        if csv:
+            rows = state.events(project)
+            output = io.StringIO()
+            fields = sorted({key for row in rows for key in row})
+            writer = csv_module.DictWriter(output, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+            typer.echo(output.getvalue())
+        else:
+            emit(state.stats(project))
+    finally:
+        state.close()
+
+
+@app.command()
+def projects(config: ConfigPath = None) -> None:
+    emit(
+        {
+            name: policy.model_dump()
+            for name, policy in read_config(config).projects.items()
+        }
+    )
+
+
+@app.command()
+def cache(config: ConfigPath = None) -> None:
+    """Inspect cache policy. Runtime cache invalidation is available via HTTP."""
+    settings = read_config(config)
+    emit(
+        {
+            "storage": "process-memory",
+            "ttl": settings.cache_ttl,
+            "capacity": settings.cache_capacity,
+            "response_cache_projects": [
+                p for p, policy in settings.projects.items() if policy.response_cache
+            ],
+        }
+    )

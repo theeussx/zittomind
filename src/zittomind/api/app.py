@@ -57,6 +57,17 @@ def create_app(
             ],
         }
 
+    @app.get("/metrics")
+    async def metrics() -> dict[str, Any]:
+        return router.state.stats(project)
+
+    @app.delete("/cache")
+    async def clear_cache() -> dict[str, int]:
+        return {
+            "cleared": router.execution.responses.clear(project)
+            + router.execution.classifications.clear(project)
+        }
+
     @app.post("/v1/chat/completions")
     async def chat(request: Request) -> Any:
         body = bytearray()
