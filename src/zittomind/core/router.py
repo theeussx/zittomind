@@ -1,6 +1,8 @@
 """Public asynchronous SDK. Decisions never include prompt text."""
 
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
 from zittomind.config import Config, Credentials, load_config
@@ -167,3 +169,41 @@ class ZittoMind:
             None if request.dry_run else await self._complete(selected, request, task)
         )
         return RouteResult(decision=decision, response=response)
+
+    async def stream(
+        self, prompt: str, **options: Any
+    ) -> AsyncGenerator[dict[str, Any]]:
+        from zittomind.providers.streaming import stream
+
+        options.pop("dry_run", None)
+        options["stream"] = True
+        result = await self.route(prompt, **options, dry_run=True)
+        request = Request(prompt=prompt, **options)
+        model = self.registry.get(result.decision.model_id)
+        credentials = Credentials()
+        secret = (
+            credentials.openai_api_key
+            if model.provider == "openai"
+            else credentials.anthropic_api_key
+        )
+        if not secret:
+            raise ValueError("missing provider credential")
+        params = reasoning_parameters(
+            model, result.decision.reasoning, request.max_output_tokens
+        )
+        async with aclosing(
+            stream(
+                model,
+                request,
+                params,
+                secret.get_secret_value(),
+                self.config.timeout_seconds,
+            )
+        ) as events:
+            async for event in events:
+                yield {
+                    "id": result.decision.id,
+                    "object": "chat.completion.chunk",
+                    "model": model.id,
+                    **event,
+                }

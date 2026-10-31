@@ -59,6 +59,7 @@ class Model(Contract):
     id: str = Field(min_length=1, max_length=200)
     provider: Literal["openai", "anthropic"]
     enabled: bool = True
+    streaming: bool = False
     context_window: int | None = Field(default=None, gt=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
     input_per_million: float | None = Field(default=None, ge=0)

@@ -53,7 +53,7 @@ def rejection_reasons(
     ):
         reasons.append("output limit unknown or exceeded")
     for name in ("stream", "tools", "structured_output"):
-        if getattr(request, name):
+        if getattr(request, name) and not (name == "stream" and model.streaming):
             reasons.append(
                 "streaming unsupported" if name == "stream" else f"{name} unsupported"
             )

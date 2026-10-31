@@ -134,3 +134,23 @@ def ask(
         emit(result.model_dump())
     elif result.response:
         typer.echo(result.response.text)
+
+
+@app.command()
+def serve(
+    config: ConfigPath = None,
+    host: str = "127.0.0.1",
+    port: int = 8787,
+    project: str = "default",
+) -> None:
+    """Serve authenticated HTTP. Set ZITTOMIND_PROXY_TOKEN first."""
+    import uvicorn
+
+    from zittomind.api.app import create_app
+
+    try:
+        application = create_app(read_config(config), project=project)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from None
+    uvicorn.run(application, host=host, port=port, access_log=False)
