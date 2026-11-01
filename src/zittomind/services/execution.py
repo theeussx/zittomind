@@ -91,12 +91,15 @@ class Execution:
             self.limiter.check(request.project)
             if not self.breaker.allow(model.id):
                 raise ValueError("provider circuit open")
-            amount = estimate(model, request)
-            limits = scope_limits(policy, request, model)
-            if limits and amount is None:
-                self.breaker.success(model.id)
-                raise ValueError("price unknown under aggregate budget")
-            self.state.reserve(event_id, amount or 0, limits)
+            try:
+                amount = estimate(model, request)
+                limits = scope_limits(policy, request, model)
+                if limits and amount is None:
+                    raise ValueError("price unknown under aggregate budget")
+                self.state.reserve(event_id, amount or 0, limits)
+            except BaseException:
+                self.breaker.abandon(model.id)
+                raise
             started = time.monotonic()
             event: dict[str, Any] = {
                 "id": event_id,
@@ -158,11 +161,15 @@ class Execution:
             self.limiter.check(request.project)
             if not self.breaker.allow(model.id):
                 raise ValueError("provider circuit open")
-            amount = estimate(model, request)
-            limits = scope_limits(policy, request, model)
-            if limits and amount is None:
-                raise ValueError("price unknown under aggregate budget")
-            self.state.reserve(event_id, amount or 0, limits)
+            try:
+                amount = estimate(model, request)
+                limits = scope_limits(policy, request, model)
+                if limits and amount is None:
+                    raise ValueError("price unknown under aggregate budget")
+                self.state.reserve(event_id, amount or 0, limits)
+            except BaseException:
+                self.breaker.abandon(model.id)
+                raise
             started = time.monotonic()
             event: dict[str, Any] = {
                 "id": event_id,

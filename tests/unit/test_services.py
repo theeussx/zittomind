@@ -145,3 +145,27 @@ async def test_response_cache_is_opt_in_and_context_sensitive():
         model, Request(prompt="same", no_cache=True), policy, generate
     )
     assert four.text == "3"
+
+
+async def test_budget_rejection_releases_half_open_probe():
+    from zittomind.schemas import Model, Policy, Request
+    from zittomind.services.execution import Execution
+
+    execution = Execution(State())
+    execution.breaker = CircuitBreaker(1, 0)
+    execution.breaker.failure("fixture")
+    model = Model(
+        id="fixture", provider="openai", input_per_million=1, output_per_million=1
+    )
+
+    async def generate():
+        raise AssertionError("budget rejection must precede the provider")
+
+    with pytest.raises(ValueError, match="budget"):
+        await execution.run(
+            model,
+            Request(prompt="hi"),
+            Policy(budgets={"project": 0}),
+            generate,
+        )
+    assert execution.breaker.allow("fixture")

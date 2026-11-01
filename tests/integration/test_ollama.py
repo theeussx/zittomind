@@ -26,6 +26,20 @@ def config():
 
 @respx.mock
 async def test_local_generation_needs_no_key():
+    respx.get("http://127.0.0.1:11434/api/tags").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "local-fixture:latest",
+                        "size": 100,
+                        "details": {"format": "gguf"},
+                    }
+                ]
+            },
+        )
+    )
     endpoint = respx.post("http://127.0.0.1:11434/api/chat").mock(
         return_value=httpx.Response(
             200,
@@ -45,6 +59,20 @@ async def test_local_generation_needs_no_key():
 
 @respx.mock
 async def test_local_ndjson_stream():
+    respx.get("http://127.0.0.1:11434/api/tags").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "local-fixture:latest",
+                        "size": 100,
+                        "details": {"format": "gguf"},
+                    }
+                ]
+            },
+        )
+    )
     respx.post("http://127.0.0.1:11434/api/chat").mock(
         return_value=httpx.Response(
             200,
@@ -56,6 +84,30 @@ async def test_local_ndjson_stream():
     ]
     assert events[0]["choices"][0]["delta"]["content"] == "local"
     assert events[-1]["usage"]["prompt_tokens"] == 3
+
+
+@respx.mock
+async def test_cloud_model_is_rejected_before_prompt_is_sent():
+    respx.get("http://127.0.0.1:11434/api/tags").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "local-fixture:latest",
+                        "size": 0,
+                        "remote_model": "fixture",
+                        "remote_host": "https://ollama.com",
+                        "details": {"format": "gguf"},
+                    }
+                ]
+            },
+        )
+    )
+    chat = respx.post("http://127.0.0.1:11434/api/chat")
+    with pytest.raises(ValueError, match="prompt was not sent"):
+        await ZittoMind(config()).route("secret", local_only=True)
+    assert not chat.called
 
 
 def test_remote_ollama_destination_rejected():

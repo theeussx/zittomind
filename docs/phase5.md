@@ -1,8 +1,14 @@
 # Fase 5 — distribuição e integrações
 
 Ollama usa exclusivamente http://127.0.0.1:11434/api/chat, texto e streaming NDJSON.
-Não baixa modelos nem chama Ollama Cloud. Instale um modelo por conta própria e
-registre limites verificados. Política strict/local-only aceita somente Ollama.
+Antes de enviar o prompt, consulta `/api/tags` e exige que o modelo exato esteja
+instalado localmente, com formato GGUF e sem metadados de modelo remoto. Modelos
+ausentes, cloud ou respostas de inventário inválidas falham sem enviar o prompt.
+Configure também `OLLAMA_NO_CLOUD=1` no serviço Ollama para desativar o recurso
+cloud no daemon; a verificação do inventário não elimina alterações concorrentes
+na configuração do daemon. ZittoMind não baixa modelos. Instale um modelo por
+conta própria e registre limites verificados. Política strict/local-only aceita
+somente Ollama.
 Custos locais não são presumidos: configure preços zero apenas para representar
 custo de API zero, não custo de hardware/energia.
 

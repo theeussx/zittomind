@@ -32,6 +32,10 @@ class CircuitBreaker:
         if self.failures[key] >= self.threshold:
             self.opened[key] = self.clock()
 
+    def abandon(self, key: str) -> None:
+        """Release a half-open probe when execution never reached the provider."""
+        self.probes.discard(key)
+
     def success(self, key: str) -> None:
         self.failures.pop(key, None)
         self.opened.pop(key, None)

@@ -10,6 +10,41 @@ from zittomind.providers.base import post
 from zittomind.schemas import Completion, Model, Request
 
 URL = "http://127.0.0.1:11434/api/chat"
+TAGS_URL = "http://127.0.0.1:11434/api/tags"
+
+
+async def require_local_model(model: Model, timeout: float) -> None:
+    """Fail closed unless Ollama reports the requested model as local GGUF."""
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout, trust_env=False, follow_redirects=False
+        ) as client:
+            response = await client.get(TAGS_URL)
+            response.raise_for_status()
+            data = response.json()
+        models = data["models"]
+        if not isinstance(models, list):
+            raise ValueError
+        # Ollama treats an untagged model ID as :latest.
+        requested = model.id if ":" in model.id else f"{model.id}:latest"
+        entry = next((item for item in models if item.get("name") == requested), None)
+        if entry is None:
+            raise ValueError
+        details = entry.get("details") or {}
+        if (
+            not isinstance(details, dict)
+            or details.get("format") != "gguf"
+            or not isinstance(entry.get("size"), int)
+            or entry["size"] <= 0
+            or entry.get("remote_model")
+            or entry.get("remote_host")
+            or requested.endswith(":cloud")
+        ):
+            raise ValueError
+    except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        raise ValueError(
+            "Ollama model is missing or not verified as local; prompt was not sent"
+        ) from None
 
 
 def payload(model: Model, request: Request, streaming: bool) -> dict[str, Any]:
@@ -26,6 +61,7 @@ def payload(model: Model, request: Request, streaming: bool) -> dict[str, Any]:
 
 
 async def complete(model: Model, request: Request, timeout: float) -> Completion:
+    await require_local_model(model, timeout)
     data = await post(URL, {}, payload(model, request, False), timeout)
     try:
         if data.get("error") or not data.get("done"):
@@ -43,6 +79,7 @@ async def complete(model: Model, request: Request, timeout: float) -> Completion
 async def stream(
     model: Model, request: Request, timeout: float
 ) -> AsyncGenerator[dict[str, Any], None]:
+    await require_local_model(model, timeout)
     ended = False
     try:
         async with httpx.AsyncClient(
